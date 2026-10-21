@@ -87,9 +87,10 @@ const bifrostMCPDestructiveExt = "x-bifrost-destructive"
 var bifrostMCPDenied = map[string]bool{
 	// Mint, trade or end dashboard credentials.
 	"login": true, "logout": true, "startSetupSession": true, "issueWSTicket": true, "isAuthEnabled": true,
-	// Browser steps of end-user OAuth and per-user-headers flows, authorized by one-time tokens.
+	// Browser steps of end-user OAuth, per-user-headers and MCP OAuth consent flows, authorized by one-time tokens.
 	"handleOAuthCallback": true, "startPerUserOauthFlow": true, "getPerUserOauthFlow": true,
 	"getPerUserHeadersFlow": true, "submitPerUserHeadersFlow": true,
+	"getOAuth2ConsentFlow": true, "submitOAuth2ConsentFlow": true,
 	// Streams (SSE) and WebSocket upgrades, which a request/response tool cannot carry.
 	"warpSession": true, "websocketConnect": true, "connectRealtime": true, "openaiRealtimeWebSocket": true,
 	"createResponseWebSocket": true, "openaiResponsesWebSocket": true,
