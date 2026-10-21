@@ -13,8 +13,22 @@ import type {
 /** How the user supplied the document in the create/replace sheet. */
 export type OpenAPISourceMode = "paste" | "url" | "upload";
 
-/** Client-side cap on a pasted or uploaded document, mirroring the server's 5 MiB limit. */
-export const OPENAPI_MAX_SPEC_BYTES = 5 * 1024 * 1024;
+/** Client-side cap on a pasted or uploaded document, mirroring the server's default 32 MiB limit. */
+export const OPENAPI_MAX_SPEC_BYTES = 32 * 1024 * 1024;
+
+/** The spec size limit for client_config.mcp_openapi_max_spec_mb, where 0 or unset is the default. */
+export function openAPIMaxSpecBytes(mb: number | undefined): number {
+	return mb && mb > 0 ? mb * 1024 * 1024 : OPENAPI_MAX_SPEC_BYTES;
+}
+
+/**
+ * The spec size limit once the core config has loaded, or null while it is pending or failed to
+ * load: the configured limit may be above the default, so guessing would refuse a document the
+ * server accepts. With null the server alone enforces the limit.
+ */
+export function knownOpenAPIMaxSpecBytes(config: { client_config?: { mcp_openapi_max_spec_mb?: number } } | undefined): number | null {
+	return config ? openAPIMaxSpecBytes(config.client_config?.mcp_openapi_max_spec_mb) : null;
+}
 
 /** Picks the editor language from the document's first non-blank character. */
 export function detectSpecLanguage(text: string | undefined): "json" | "yaml" {
@@ -403,14 +417,17 @@ export function applyParsedPreview(
 }
 
 /** Reads an uploaded spec file, returning its text or the error to show. */
-export async function readUploadedSpec(file: {
-	size: number;
-	text: () => Promise<string>;
-}): Promise<{ text: string; error: string | null }> {
-	if (isSpecTooLarge(file.size)) {
+export async function readUploadedSpec(
+	file: {
+		size: number;
+		text: () => Promise<string>;
+	},
+	maxBytes: number = OPENAPI_MAX_SPEC_BYTES,
+): Promise<{ text: string; error: string | null }> {
+	if (isSpecTooLarge(file.size, maxBytes)) {
 		return {
 			text: "",
-			error: i18n.t("openapi.source.fileTooLarge", { ns: "mcp", size: formatBytes(OPENAPI_MAX_SPEC_BYTES) }),
+			error: i18n.t("openapi.source.fileTooLarge", { ns: "mcp", size: formatBytes(maxBytes) }),
 		};
 	}
 	let text: string;
