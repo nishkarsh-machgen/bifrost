@@ -87,3 +87,31 @@ func TestUserLimitsRoutesCoexistWithEnterpriseUserRoutes(t *testing.T) {
 	r.GET("/api/governance/users/{user_id}/teams", noop)
 	require.NotPanics(t, func() { NewUserLimitsHandler(&userLimitsReader{}).RegisterRoutes(r) })
 }
+
+// BenchmarkUserLimits measures the route's own cost: routing, the projection
+// and writing the result. The reader is a fake holding one user with one
+// profile, so the database reads an enterprise reader makes are left out.
+func BenchmarkUserLimits(b *testing.B) {
+	SetLogger(&mockLogger{})
+	reader := &userLimitsReader{users: map[string]*warp.UserGovernance{
+		"u-1": {UserID: "u-1", Name: "Ada", Profiles: []warp.UserGovernanceProfile{{
+			Name: "engineering", Active: true,
+			Budgets: []tables.TableBudget{{ID: "b-1", MaxLimit: 450, CurrentUsage: 50, ResetDuration: "1M"}},
+		}}},
+	}}
+	r := router.New()
+	NewUserLimitsHandler(reader).RegisterRoutes(r)
+	for _, path := range []string{"/api/governance/users/u-1/limits", "/api/governance/users/me/limits"} {
+		b.Run(path, func(b *testing.B) {
+			var req fasthttp.Request
+			req.SetRequestURI(path)
+			b.ReportAllocs()
+			for b.Loop() {
+				reader.asked = reader.asked[:0]
+				ctx := initCtx(&req)
+				ctx.SetUserValue(schemas.BifrostContextKeyUserID, "u-1")
+				r.Handler(ctx)
+			}
+		})
+	}
+}
