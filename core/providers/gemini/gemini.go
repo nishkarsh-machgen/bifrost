@@ -4279,7 +4279,7 @@ func (provider *GeminiProvider) Passthrough(
 	var servedModel string
 	if resp.StatusCode() >= 200 && resp.StatusCode() < 300 {
 		if IsInteractionsPassthroughPath(req.Path) {
-			passthroughUsage, servedModel = InteractionsPassthroughUsage(body)
+			passthroughUsage, servedModel = InteractionsPassthroughUsage(key.ID, body)
 		} else {
 			passthroughUsage = ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
 		}
@@ -4389,7 +4389,7 @@ func (provider *GeminiProvider) PassthroughStream(
 		},
 	}
 	if IsInteractionsPassthroughPath(req.Path) {
-		observer := NewInteractionsStreamObserver()
+		observer := NewInteractionsStreamObserver(key.ID)
 		params.Observe = observer.Observe
 		params.Finalize = observer.Finalize
 	}

@@ -290,14 +290,17 @@ type geminiInteractionsUsage struct {
 }
 
 type geminiInteractionsRun struct {
+	ID          string                   `json:"id"`
 	Agent       string                   `json:"agent"`
 	Model       string                   `json:"model"`
+	Status      string                   `json:"status"`
 	Usage       *geminiInteractionsUsage `json:"usage"`
 	ServiceTier *string                  `json:"service_tier"`
 }
 
 type geminiInteractionsWrapper struct {
 	geminiInteractionsRun
+	InteractionID string `json:"interaction_id"` // interaction.status_update events name the run here
 	// Streaming interaction.created / interaction.completed events nest the interaction object.
 	Interaction *geminiInteractionsRun `json:"interaction"`
 }
@@ -305,12 +308,24 @@ type geminiInteractionsWrapper struct {
 // InteractionsPassthroughInfo is what one Interactions response body or stream event says about
 // the run it belongs to. Usage is nil when the body reports none.
 type InteractionsPassthroughInfo struct {
-	Model string // the agent that ran, else the model
-	Usage *schemas.BifrostPassthroughUsage
+	ID     string
+	Model  string // the agent that ran, else the model
+	Status string
+	Usage  *schemas.BifrostPassthroughUsage
+}
+
+// billingFinal reports whether the run's usage is final at this status. A run still in progress
+// (or waiting on a continuation token) reports usage that a later read will report in full.
+func (i InteractionsPassthroughInfo) billingFinal() bool {
+	switch i.Status {
+	case "in_progress", "requires_continuation":
+		return false
+	}
+	return true
 }
 
 // ParseInteractionsPassthrough decodes an Interactions response body or SSE event once, for its
-// agent or model and its usage.
+// run id, agent or model, status and usage.
 func ParseInteractionsPassthrough(body []byte) InteractionsPassthroughInfo {
 	var info InteractionsPassthroughInfo
 	if len(body) == 0 {
@@ -324,9 +339,17 @@ func ParseInteractionsPassthrough(body []byte) InteractionsPassthroughInfo {
 	if w.Interaction != nil {
 		run = *w.Interaction
 	}
+	info.ID = run.ID
+	if info.ID == "" {
+		info.ID = w.InteractionID
+	}
 	info.Model = run.Agent
 	if info.Model == "" {
 		info.Model = run.Model
+	}
+	info.Status = run.Status
+	if info.Status == "" {
+		info.Status = w.Status
 	}
 	// Streaming takes priority: nested under "interaction" with a non-zero total.
 	u, tier := w.Usage, w.ServiceTier
@@ -372,36 +395,58 @@ func interactionsUsage(u *geminiInteractionsUsage, tier *string) *schemas.Bifros
 }
 
 // InteractionsPassthroughUsage reads a non-streaming Interactions response for the usage to bill
-// and the agent or model that ran. The served model is returned even when the body reports no
-// usage, so every poll's record names what ran.
-func InteractionsPassthroughUsage(body []byte) (*schemas.BifrostPassthroughUsage, string) {
+// and the agent or model that ran. A run's usage is billed once: on the first read that reports it
+// final for this key, not on a poll that is still in progress and not on a re-read of a run already
+// billed. The served model is returned either way so every poll's record names what ran.
+func InteractionsPassthroughUsage(keyID string, body []byte) (*schemas.BifrostPassthroughUsage, string) {
 	info := ParseInteractionsPassthrough(body)
+	if info.Usage == nil {
+		return nil, info.Model
+	}
+	if !info.billingFinal() || !interactionsBilled.claim(keyID, info.ID) {
+		return nil, info.Model
+	}
 	return info.Usage, info.Model
 }
 
 // InteractionsStreamObserver follows an Interactions SSE stream (a create with stream=true, or a GET
-// resuming one) for the agent or model it reports running.
+// resuming one) for its run id, served model and usage, and settles billing once at the end.
 type InteractionsStreamObserver struct {
-	model string
+	keyID string
+	last  InteractionsPassthroughInfo
 }
 
-// NewInteractionsStreamObserver starts observing one stream.
-func NewInteractionsStreamObserver() *InteractionsStreamObserver {
-	return &InteractionsStreamObserver{}
+// NewInteractionsStreamObserver starts observing one stream served by keyID.
+func NewInteractionsStreamObserver(keyID string) *InteractionsStreamObserver {
+	return &InteractionsStreamObserver{keyID: keyID}
 }
 
 // Observe records one usage-bearing event and returns its running usage.
 func (o *InteractionsStreamObserver) Observe(event []byte) *schemas.BifrostPassthroughUsage {
 	info := ParseInteractionsPassthrough(event)
+	if info.ID != "" {
+		o.last.ID = info.ID
+	}
 	if info.Model != "" {
-		o.model = info.Model
+		o.last.Model = info.Model
+	}
+	if info.Status != "" {
+		o.last.Status = info.Status
+	}
+	if info.Usage != nil {
+		o.last.Usage = info.Usage
 	}
 	return info.Usage
 }
 
-// Finalize names the model the stream reported running; the observed usage is billed as is.
+// Finalize settles the stream's usage. A stream that ended on a final status bills only if this
+// run has not been billed already; one cut short keeps its partial usage, since no later read may
+// ever report it.
 func (o *InteractionsStreamObserver) Finalize(usage *schemas.BifrostPassthroughUsage) (*schemas.BifrostPassthroughUsage, string) {
-	return usage, o.model
+	if usage != nil && o.last.Status != "" && o.last.billingFinal() && !interactionsBilled.claim(o.keyID, o.last.ID) {
+		usage = nil
+	}
+	return usage, o.last.Model
 }
 
 // ---- :predictLongRunning (Veo video generation) ----

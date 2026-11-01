@@ -4805,7 +4805,7 @@ func (provider *VertexProvider) Passthrough(
 			passthroughUsage = openai.ExtractOpenAIPassthroughUsage(req.Method, req.Path, req.Body, body)
 		default:
 			if gemini.IsInteractionsPassthroughPath(req.Path) {
-				passthroughUsage, servedModel = gemini.InteractionsPassthroughUsage(body)
+				passthroughUsage, servedModel = gemini.InteractionsPassthroughUsage(key.ID, body)
 			} else {
 				passthroughUsage = gemini.ExtractGeminiPassthroughUsage(req.Path, req.Body, body)
 			}
@@ -5000,7 +5000,7 @@ func (provider *VertexProvider) PassthroughStream(
 		}
 	default:
 		if gemini.IsInteractionsPassthroughPath(req.Path) {
-			observer := gemini.NewInteractionsStreamObserver()
+			observer := gemini.NewInteractionsStreamObserver(key.ID)
 			observe, finalize = observer.Observe, observer.Finalize
 		}
 	}
