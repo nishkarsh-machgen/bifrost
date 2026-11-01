@@ -214,12 +214,12 @@ func (m *MCPManager) acquireClientConn(ctx *schemas.BifrostContext, state *schem
 				return fmt.Errorf("failed to create HTTP transport: %w", err)
 			}
 			request := initRequest
-			var clientOpts []client.ClientOption
 			if pinned != "" {
 				request.Params.ProtocolVersion = pinned
-				clientOpts = append(clientOpts, client.WithProtocolVersion(pinned))
+				tempClient = client.NewClient(httpTransport, manualInputRoundTrips, client.WithProtocolVersion(pinned))
+			} else {
+				tempClient = client.NewClient(httpTransport, manualInputRoundTrips)
 			}
-			tempClient = client.NewClient(httpTransport, clientOpts...)
 			if err := tempClient.Start(ctx); err != nil {
 				return err
 			}
@@ -4007,10 +4007,8 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 	if httpClient != nil {
 		opts = append(opts, transport.WithHTTPBasicClient(httpClient))
 	}
-	var clientOpts []client.ClientOption
 	if listenOn != "" {
 		opts = append(opts, transport.WithContinuousListening())
-		clientOpts = append(clientOpts, client.WithProtocolVersion(listenOn))
 	}
 	httpTransport, err := transport.NewStreamableHTTP(url, opts...)
 	if err != nil {
@@ -4020,7 +4018,10 @@ func (m *MCPManager) createHTTPConnection(ctx context.Context, config *schemas.M
 		Type:          config.ConnectionType,
 		ConnectionURL: &url,
 	}
-	return client.NewClient(httpTransport, clientOpts...), connectionInfo, nil
+	if listenOn != "" {
+		return client.NewClient(httpTransport, manualInputRoundTrips, client.WithProtocolVersion(listenOn)), connectionInfo, nil
+	}
+	return client.NewClient(httpTransport, manualInputRoundTrips), connectionInfo, nil
 }
 
 // createSTDIOConnection creates a STDIO-based MCP client connection without holding locks.
@@ -4074,7 +4075,7 @@ func (m *MCPManager) createSTDIOConnection(_ context.Context, config *schemas.MC
 	}
 
 	// Return nil for cmd since mark3labs/mcp-go manages the process internally
-	return client.NewClient(stdioTransport), connectionInfo, nil
+	return client.NewClient(stdioTransport, manualInputRoundTrips), connectionInfo, nil
 }
 
 // createSSEConnection creates a SSE-based MCP client connection without holding locks.
@@ -4143,7 +4144,7 @@ func (m *MCPManager) createInProcessConnection(_ context.Context, config *schema
 	}
 
 	// Create in-process client directly connected to the provided server
-	inProcessClient, err := client.NewInProcessClient(config.InProcessServer)
+	inProcessClient, err := client.NewInProcessClientWithOptions(config.InProcessServer, manualInputRoundTrips)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create in-process client: %w", err)
 	}
@@ -4193,7 +4194,7 @@ func (m *MCPManager) createOpenAPIConnection(ctx context.Context, config *schema
 	if srv == nil {
 		return nil, nil, fmt.Errorf("%w: in-process server factory returned no server", schemas.ErrMCPOpenAPIConfigInvalid)
 	}
-	inProcessClient, err := client.NewInProcessClient(srv)
+	inProcessClient, err := client.NewInProcessClientWithOptions(srv, manualInputRoundTrips)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create in-process client: %w", err)
 	}
