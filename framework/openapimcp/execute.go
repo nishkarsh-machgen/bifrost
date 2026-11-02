@@ -159,6 +159,30 @@ func (e *Executor) BuildRequest(ctx context.Context, tool *Tool, args map[string
 			}
 			path = strings.ReplaceAll(path, "{"+arg.Name+"}", segment)
 		case InQuery:
+			if arg.Template != "" {
+				entries, ok := value.(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("query parameter %q takes an object mapping each key to its value", arg.ArgName)
+				}
+				// Each entry is one concrete parameter, serialized under its style
+				// like any other query value.
+				placeholder := argNamePlaceholder.FindString(arg.Name)
+				emitted := 0
+				for _, key := range sortedKeys(entries) {
+					if entries[key] == nil {
+						continue
+					}
+					concrete := arg
+					concrete.Name = strings.Replace(arg.Name, placeholder, key, 1)
+					before := countQueryValues(query)
+					addQueryValue(query, concrete, entries[key])
+					emitted += countQueryValues(query) - before
+				}
+				if emitted == 0 && arg.Required && !configured[parameterKey(arg.Location, arg.Name)] {
+					return nil, fmt.Errorf("missing required %s parameter %q", arg.Location, arg.Name)
+				}
+				continue
+			}
 			addQueryValue(query, arg, value)
 		case InHeader:
 			name := http.CanonicalHeaderKey(arg.Name)
@@ -516,6 +540,15 @@ func addQueryValue(q url.Values, arg ArgBinding, value any) {
 	default:
 		q.Add(arg.Name, stringify(v, ","))
 	}
+}
+
+// countQueryValues is the number of name=value pairs q encodes.
+func countQueryValues(q url.Values) int {
+	n := 0
+	for _, vals := range q {
+		n += len(vals)
+	}
+	return n
 }
 
 // objectPairs flattens an object to key,value,key,value in key order, the
