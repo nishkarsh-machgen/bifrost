@@ -374,3 +374,133 @@ func TestConfigConvertDecisionToResponsesDefaultsOff(t *testing.T) {
 		t.Error("convert_decision_to_responses should be true when set")
 	}
 }
+
+// newAliasDropTestPlugin builds a drop-params plugin whose bedrock key maps
+// key-level aliases onto models that carry a supported-parameter list.
+func newAliasDropTestPlugin(t *testing.T, supported map[string][]string, aliases schemas.KeyAliases) *CompatPlugin {
+	t.Helper()
+	ds := datasheet.NewTestStore(nil)
+	ds.SetSupportedParamsForTest(supported)
+	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: aliases}})
+	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	return p
+}
+
+func newStopChatRequest(provider schemas.ModelProvider, model string) *schemas.BifrostRequest {
+	return &schemas.BifrostRequest{
+		RequestType: schemas.ChatCompletionRequest,
+		ChatRequest: &schemas.BifrostChatRequest{
+			Provider: provider,
+			Model:    model,
+			Params: &schemas.ChatParameters{
+				Stop:        []string{"</block>"},
+				Temperature: schemas.Ptr(0.5),
+			},
+		},
+	}
+}
+
+// TestPluginDropParamsResolvesKeyAlias guards that drop-params reads the
+// supported-parameter list of the model an alias names, not the alias string,
+// which the catalog never has a row for.
+func TestPluginDropParamsResolvesKeyAlias(t *testing.T) {
+	cases := []struct {
+		name      string
+		supported map[string][]string
+		aliases   schemas.KeyAliases
+		model     string
+	}{
+		{
+			name:      "model_id",
+			supported: map[string][]string{"deepseek.v3.2": {"temperature"}},
+			aliases:   schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}},
+			model:     "claude-deepseek-v3",
+		},
+		{
+			name:      "model_name wins over an opaque model_id",
+			supported: map[string][]string{"deepseek.v3.2": {"temperature"}},
+			aliases:   schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "abc12xyz", ModelName: schemas.Ptr("deepseek.v3.2")}},
+			model:     "claude-deepseek-v3",
+		},
+		{
+			name:      "alias case-insensitive",
+			supported: map[string][]string{"deepseek.v3.2": {"temperature"}},
+			aliases:   schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}},
+			model:     "Claude-DeepSeek-V3",
+		},
+		{
+			// Migrated deployment maps keep the real model as the alias name and an opaque deployment id as model_id.
+			name:      "deployment alias falls back to the alias name's list",
+			supported: map[string][]string{"gpt-4o": {"temperature"}},
+			aliases:   schemas.KeyAliases{"gpt-4o": {ModelID: "my-gpt4o-prod-east"}},
+			model:     "gpt-4o",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newAliasDropTestPlugin(t, tc.supported, tc.aliases)
+			ctx := newTestContext()
+			out, _, err := p.PreLLMHook(ctx, newStopChatRequest(schemas.Bedrock, tc.model))
+			if err != nil {
+				t.Fatalf("PreLLMHook: %v", err)
+			}
+			if out.ChatRequest.Params.Stop != nil {
+				t.Errorf("stop = %v, want it dropped", out.ChatRequest.Params.Stop)
+			}
+			if out.ChatRequest.Params.Temperature == nil {
+				t.Errorf("temperature was dropped, want it kept")
+			}
+			if out.ChatRequest.Model != tc.model {
+				t.Errorf("model = %q, want the alias %q left for core to resolve", out.ChatRequest.Model, tc.model)
+			}
+			dropped, _ := ctx.Value(schemas.BifrostContextKeyCompatDroppedParams).([]string)
+			if !slices.Equal(dropped, []string{"stop"}) {
+				t.Errorf("dropped = %v, want [stop]", dropped)
+			}
+		})
+	}
+}
+
+// TestPluginDropParamsAliasOnOtherProvider guards that an alias is resolved
+// against the request's own provider only.
+func TestPluginDropParamsAliasOnOtherProvider(t *testing.T) {
+	p := newAliasDropTestPlugin(t,
+		map[string][]string{"deepseek.v3.2": {"temperature"}},
+		schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}})
+	ctx := newTestContext()
+	out, _, err := p.PreLLMHook(ctx, newStopChatRequest(schemas.OpenAI, "claude-deepseek-v3"))
+	if err != nil {
+		t.Fatalf("PreLLMHook: %v", err)
+	}
+	if out.ChatRequest.Params.Stop == nil {
+		t.Errorf("stop dropped on a provider that has no such alias")
+	}
+}
+
+// BenchmarkPreLLMHookDropParams measures the drop-params PreLLMHook for a plain
+// model and for a key alias, which adds one alias-index lookup.
+func BenchmarkPreLLMHookDropParams(b *testing.B) {
+	ds := datasheet.NewTestStore(nil)
+	ds.SetSupportedParamsForTest(map[string][]string{"deepseek.v3.2": {"temperature"}})
+	mc := modelcatalog.NewTestCatalogWithDatasheet(ds)
+	mc.SetKeyConfigForProvider(schemas.Bedrock, []schemas.Key{{ID: "bedrock-key", Aliases: schemas.KeyAliases{"claude-deepseek-v3": {ModelID: "deepseek.v3.2"}}}})
+	p, err := Init(Config{ShouldDropParams: true}, bifrost.NewNoOpLogger(), mc)
+	if err != nil {
+		b.Fatalf("Init: %v", err)
+	}
+	for _, model := range []string{"deepseek.v3.2", "claude-deepseek-v3"} {
+		b.Run(model, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				ctx := newTestContext()
+				if _, _, err := p.PreLLMHook(ctx, newStopChatRequest(schemas.Bedrock, model)); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

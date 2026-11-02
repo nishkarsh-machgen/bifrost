@@ -183,9 +183,9 @@ func (p *CompatPlugin) PreLLMHook(ctx *schemas.BifrostContext, req *schemas.Bifr
 
 	// Compute unsupported parameters to drop based on model catalog allowlist
 	if ((shouldDropParamsOverrideEnabled && shouldDropParamsOverride) || p.config.ShouldDropParams) && p.modelCatalog != nil {
-		_, model, _ := modifiedReq.GetRequestFields()
+		provider, model, _ := modifiedReq.GetRequestFields()
 		if model != "" {
-			supportedParams := p.modelCatalog.GetSupportedParameters(model)
+			supportedParams := p.supportedParameters(provider, model)
 			if supportedParams == nil {
 				ctx.Log(schemas.LogLevelDebug, fmt.Sprintf("model catalog has no supported-parameter list for model %s, no params dropped", model))
 			} else {
