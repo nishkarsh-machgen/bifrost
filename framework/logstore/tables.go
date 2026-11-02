@@ -166,9 +166,9 @@ type SearchFilters struct {
 	// GuardrailOutcomes keeps requests a guardrail acted on: "blocked" matches
 	// a guardrail_intervention error or a recorded intervention, "detected" a
 	// detect-only match in guardrail_debug. Several values are OR-ed together.
-	GuardrailOutcomes []string          `json:"guardrail_outcomes,omitempty"`
-	ContentSearch     string            `json:"content_search,omitempty"`
-	MetadataFilters   map[string]string `json:"metadata_filters,omitempty"` // key=metadataKey, value=metadataValue for filtering by metadata
+	GuardrailOutcomes []string            `json:"guardrail_outcomes,omitempty"`
+	ContentSearch     string              `json:"content_search,omitempty"`
+	MetadataFilters   map[string][]string `json:"metadata_filters,omitempty"` // metadata key to accepted values: any value per key, every key
 	// RankingLimit caps the number of rows returned by the ranking queries
 	// (GetModelRankings / GetUserRankings / GetDimensionRankings). nil means
 	// "use the store default" (defaultMaxRankingsLimit); a value <= 0 means
